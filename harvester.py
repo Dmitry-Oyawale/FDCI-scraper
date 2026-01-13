@@ -3,12 +3,7 @@ import csv
 import re
 
 LESSON_URLS = [
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb4881972d?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d28b6a0fa82bb487b8567?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819783?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819825?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e", 
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819892?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d2a00a0fa82bb488198eb?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e"
+
 ]
 
 OUTFILE = "amplify_teacher_presentation_cards.csv"
@@ -34,7 +29,9 @@ with sync_playwright() as p:
 
         for lesson_url in LESSON_URLS:
             print("Scraping:", lesson_url)
-            page.goto(lesson_url, wait_until="networkidle")
+            page.goto(lesson_url, wait_until="domcontentloaded", timeout=120000)
+
+            page.wait_for_selector(".alp-preview-miniscreen, .k5-note .ProseMirror", timeout=120000)
 
             lesson_title = page.locator(".activity-title h1").inner_text()
 
