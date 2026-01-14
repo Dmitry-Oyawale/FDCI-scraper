@@ -1,64 +1,116 @@
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import csv
 import re
+import time
 
 LESSON_URLS = [
-
+    "https://classroom.amplify.com/activity/688d29ffa0fa82bb4881972d?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
+    "https://classroom.amplify.com/activity/688d28b6a0fa82bb487b8567?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
+    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819783?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
+    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819825?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
+    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819892?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
+    "https://classroom.amplify.com/activity/688d2a00a0fa82bb488198eb?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e"
 ]
 
 OUTFILE = "amplify_teacher_presentation_cards.csv"
 
-def clean(text):
+
+def clean(text: str) -> str:
+    if not text:
+        return ""
     return re.sub(r"\s+", " ", text).strip()
 
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=False)  
-    page = browser.new_page()
 
-    input("Log in to Amplify if needed, then press ENTER here...")
+def safe_inner_text(locator, timeout=1500) -> str:
+    try:
+        return locator.inner_text(timeout=timeout)
+    except Exception:
+        return ""
+
+
+def try_click_preview(page) -> None:
+
+    try:
+        btn = page.get_by_role("button", name="Preview")
+        if btn.count() > 0:
+            btn.first.click(timeout=5000)
+            page.wait_for_timeout(800)  
+    except Exception:
+        pass
+
+
+def wait_for_lesson_shell(page, timeout=120000) -> None:
+    page.wait_for_selector(".teacher-page-content", timeout=timeout, state="attached")
+
+
+def wait_for_miniscreens(page, timeout=120000) -> None:
+    page.wait_for_selector(".alp-preview-miniscreen, .k5-note .ProseMirror", timeout=timeout, state="attached")
+
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=False)
+    context = browser.new_context()
+    page = context.new_page()
+
+    print("\nA browser window opened.")
+    print("1) In THAT window, log into Amplify (SSO/etc).")
+    print("2) Once you can open a lesson normally in that same window, come back here.")
+    input("Then press ENTER here to start scraping...")
 
     with open(OUTFILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "lesson_url",
-            "lesson_title",
-            "card_step",
-            "section",
-            "card_text"
-        ])
+        writer.writerow(["lesson_url", "lesson_title", "card_step", "section", "card_text"])
 
-        for lesson_url in LESSON_URLS:
-            print("Scraping:", lesson_url)
-            page.goto(lesson_url, wait_until="domcontentloaded", timeout=120000)
+        for idx, lesson_url in enumerate(LESSON_URLS, start=1):
+            print(f"\n[{idx}/{len(LESSON_URLS)}] Scraping: {lesson_url}")
 
-            page.wait_for_selector(".alp-preview-miniscreen, .k5-note .ProseMirror", timeout=120000)
+            try:
+                page.goto(lesson_url, wait_until="domcontentloaded", timeout=120000)
+                page.wait_for_timeout(1500)  
 
-            lesson_title = page.locator(".activity-title h1").inner_text()
+                wait_for_lesson_shell(page, timeout=120000)
+
+                try_click_preview(page)
+
+                wait_for_miniscreens(page, timeout=120000)
+
+            except PlaywrightTimeoutError:
+                ts = int(time.time())
+                debug_path = f"debug_timeout_{ts}.png"
+                try:
+                    page.screenshot(path=debug_path, full_page=True)
+                    print(f"TIMEOUT. Saved screenshot: {debug_path}")
+                except Exception:
+                    print("TIMEOUT. (Also failed to save screenshot.)")
+
+                print("Final URL:", page.url)
+                continue
+
+            lesson_title = safe_inner_text(page.locator(".activity-title h1")) \
+                or safe_inner_text(page.locator("h1")) \
+                or ""
 
             miniscreens = page.locator(".alp-preview-miniscreen")
             count = miniscreens.count()
+            print("Miniscreens found:", count)
 
             for i in range(count):
                 ms = miniscreens.nth(i)
 
-                step = ms.locator(".step-index span").inner_text(timeout=1000)
-                section = ""
-                if ms.locator(".section-name-text span").count():
-                    section = ms.locator(".section-name-text span").inner_text()
+                step = safe_inner_text(ms.locator(".step-index span"))
+                section = safe_inner_text(ms.locator(".section-name-text span"))
 
-                text = ""
-                if ms.locator(".k5-note .ProseMirror").count():
-                    text = ms.locator(".k5-note .ProseMirror").inner_text()
+                text = safe_inner_text(ms.locator(".k5-note .ProseMirror"))
 
                 writer.writerow([
                     lesson_url,
                     clean(lesson_title),
                     clean(step),
                     clean(section),
-                    clean(text)
+                    clean(text),
                 ])
 
+    context.close()
     browser.close()
 
 print(f"\nDone. Wrote {OUTFILE}")
-
