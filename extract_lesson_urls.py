@@ -1,30 +1,24 @@
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-import os
 import re
+import csv
+import argparse
+from urllib.parse import urljoin
 
-GRADE_OVERVIEW_URL = "https://classroom.amplify.com/collection/6802a76e907aef8d98d039a8?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03"
-STORAGE_STATE = "amplify_storage_state.json"
-OUT_PY = "lesson_urls_grade4.py"
-
-ACTIVITY_RE = re.compile(r"^https://classroom\.amplify\.com/activity/[0-9a-f]{24}\b", re.I)
-
-UNIT_MARKER_RE = re.compile(r"\bUnit\s+(Zero|\d+)\b", re.I)
-COLLECTION_RE = re.compile(r"^https://classroom\.amplify\.com/collection/[0-9a-f]{24}\b", re.I)
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
-def normalize_url(url: str) -> str:
-    return (url or "").split("#", 1)[0].strip()
+
+UNIT_TEXT_RE = re.compile(r"^\s*Unit\b", re.IGNORECASE)
+LESSON_TEXT_RE = re.compile(r"\bLesson\s*\d+\b", re.IGNORECASE)
 
 
-def write_python_list(path: str, urls: list[str]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("LESSON_URLS = [\n")
-        for u in urls:
-            f.write(f'    "{u}",\n')
-        f.write("]\n")
+
+def normalize_url(base: str, href: str) -> str:
+    if not href:
+        return ""
+    return urljoin(base, href)
 
 
-def dedupe_preserve_order(items: list[str]) -> list[str]:
+def unique_keep_order(items):
     seen = set()
     out = []
     for x in items:
@@ -34,142 +28,163 @@ def dedupe_preserve_order(items: list[str]) -> list[str]:
     return out
 
 
-def scroll_to_load(page, rounds: int = 12, step: int = 1200, wait_ms: int = 200) -> None:
-    for _ in range(rounds):
+def safe_goto(page, url: str, timeout=60000):
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+    except PlaywrightTimeoutError:
+        page.goto(url, timeout=timeout)
+
+
+def auto_scroll(page, step=900, max_scrolls=30):
+    for _ in range(max_scrolls):
         page.mouse.wheel(0, step)
-        page.wait_for_timeout(wait_ms)
+        page.wait_for_timeout(200)
 
 
-def get_unit_links_from_grade_page(page) -> list[str]:
 
-    selector = "main a[href]" if page.locator("main").count() else "a[href]"
+def extract_unit_links_from_grade(page) -> list[str]:
+    page.wait_for_load_state("domcontentloaded")
 
-    links = page.eval_on_selector_all(
-        selector,
-        """
-        (els) => els.map(a => ({
-          href: a.href,
-          text: (a.innerText || "").trim()
-        }))
-        """
-    )
+    locators = [
+        page.locator("main a[href*='/collection/']"),
+        page.locator("a[href*='/collection/']"),
+    ]
 
-    unit_urls = []
-    for item in links:
-        href = normalize_url(item.get("href", ""))
-        text = item.get("text", "") or ""
-        if not href or not text:
+    base = page.url
+    unit_links = []
+
+    for anchors in locators:
+        for i in range(anchors.count()):
+            a = anchors.nth(i)
+            text = (a.inner_text() or "").strip()
+            if not UNIT_TEXT_RE.match(text):
+                continue
+            href = a.get_attribute("href")
+            unit_links.append(normalize_url(base, href))
+
+        unit_links = unique_keep_order(unit_links)
+        if unit_links:
+            break
+
+    return unit_links
+
+
+def extract_lesson_items_from_unit(page) -> list[str]:
+    
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(500)
+    auto_scroll(page)
+
+    base = page.url
+    lesson_links = []
+
+    lesson_nodes = page.locator("text=/\\bLesson\\s*\\d+\\b/i")
+    count = lesson_nodes.count()
+
+    for i in range(count):
+        node = lesson_nodes.nth(i)
+
+        link = node.locator("xpath=ancestor-or-self::a[@href][1]")
+        if link.count() == 0:
             continue
-        if COLLECTION_RE.match(href) and UNIT_MARKER_RE.search(text):
-            unit_urls.append(href)
 
-    return dedupe_preserve_order(unit_urls)
+        href = link.first.get_attribute("href")
+        if not href:
+            continue
+
+        full = normalize_url(base, href)
+
+        if "/collection/" in full or "/activity/" in full:
+            lesson_links.append(full)
+
+    return unique_keep_order(lesson_links)
 
 
-def get_lesson_links_from_unit_page(page) -> list[str]:
+def extract_activity_links_from_lesson_collection(page) -> list[str]:
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(500)
+    auto_scroll(page)
 
-    selector = "main" if page.locator("main").count() else "body"
+    base = page.url
+    activity_links = []
 
-    items = page.eval_on_selector_all(
-        f"{selector} *",
-        r"""
-        (els) => {
-          const isLessonLabel = (el) => {
-            const t = (el.innerText || "").trim();
-            return /\bLesson\s+\d+\s*:/i.test(t);
-          };
+    anchors = page.locator("a[href*='/activity/']")
+    for i in range(anchors.count()):
+        a = anchors.nth(i)
+        href = a.get_attribute("href")
+        activity_links.append(normalize_url(base, href))
 
-          const results = [];
-          const seen = new Set();
+    return unique_keep_order(activity_links)
 
-          for (const el of els) {
-            if (!isLessonLabel(el)) continue;
-
-            let container = el;
-            for (let i = 0; i < 10; i++) {
-              if (!container || !container.parentElement) break;
-              container = container.parentElement;
-
-              const a = container.querySelector('a[href*="/activity/"]');
-              if (a) break;
-            }
-
-            const a = container && container.querySelector('a[href*="/activity/"]');
-            if (!a) continue;
-
-            const href = a.href || "";
-            if (!href) continue;
-
-            if (!seen.has(href)) {
-              seen.add(href);
-              results.push(href);
-            }
-          }
-          return results;
-        }
-        """
-    )
-
-    lesson_urls = []
-    for href in items:
-        href = normalize_url(href)
-        if ACTIVITY_RE.match(href):
-            lesson_urls.append(href)
-
-    return dedupe_preserve_order(lesson_urls)
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("grade_url")
+    parser.add_argument("--out", default="lesson_links.csv")
+    parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--profile", default="amplify_profile")
+    parser.add_argument("--pause-for-login", action="store_true")
+    args = parser.parse_args()
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-
-        if os.path.exists(STORAGE_STATE):
-            context = browser.new_context(storage_state=STORAGE_STATE)
-        else:
-            context = browser.new_context()
-
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=args.profile,
+            headless=not args.headed,
+        )
         page = context.new_page()
 
-        if not os.path.exists(STORAGE_STATE):
-            page.goto("https://classroom.amplify.com", wait_until="domcontentloaded", timeout=120000)
-            input("Log in in the opened browser, then press ENTER here to save login state...")
-            context.storage_state(path=STORAGE_STATE)
-            print(f"Saved login state to: {STORAGE_STATE}")
+        print(f"Opening grade page:\n  {args.grade_url}")
+        safe_goto(page, args.grade_url)
 
-        print("Opening grade page...")
-        page.goto(GRADE_OVERVIEW_URL, wait_until="domcontentloaded", timeout=120000)
-        page.wait_for_timeout(1500)
-        scroll_to_load(page, rounds=8)
+        unit_links = extract_unit_links_from_grade(page)
 
-        unit_urls = get_unit_links_from_grade_page(page)
-        print(f"Found {len(unit_urls)} unit links.")
+        if not unit_links:
+            print("\nUnits found: 0")
+            print("Likely not logged in yet.")
+            if args.pause_for_login:
+                print("\nLog in in the opened browser.")
+                input("Press ENTER after logging in...")
+                unit_links = extract_unit_links_from_grade(page)
 
-        all_lessons = []
+        print(f"\nUnits found: {len(unit_links)}")
+        for i, u in enumerate(unit_links, 1):
+            print(f"  [{i}] {u}")
 
-        for i, unit_url in enumerate(unit_urls, start=1):
-            print(f"[Unit {i}/{len(unit_urls)}] {unit_url}")
-            try:
-                page.goto(unit_url, wait_until="domcontentloaded", timeout=120000)
-                page.wait_for_timeout(1500)
+        all_activity_links = []
 
-                scroll_to_load(page, rounds=14)
+        for unit_idx, unit_url in enumerate(unit_links, 1):
+            print(f"\n[Unit {unit_idx}/{len(unit_links)}] Visiting unit page...")
+            safe_goto(page, unit_url)
 
-                lessons = get_lesson_links_from_unit_page(page)
-                print(f"  Lessons found: {len(lessons)}")
-                all_lessons.extend(lessons)
+            lesson_items = extract_lesson_items_from_unit(page)
+            print(f"  Lesson items found: {len(lesson_items)}")
 
-            except PlaywrightTimeoutError:
-                print("  TIMEOUT loading unit (skipping).")
-                continue
+            for lesson_idx, lesson_url in enumerate(lesson_items, 1):
+                print(f"    [Lesson {lesson_idx}] {lesson_url}")
 
-        all_lessons = dedupe_preserve_order(all_lessons)
+                if "/activity/" in lesson_url:
+                    all_activity_links.append(lesson_url)
+                    continue
 
-        write_python_list(OUT_PY, all_lessons)
-        print(f"\nTotal lessons found: {len(all_lessons)}")
-        print(f"Wrote: {OUT_PY}")
+                safe_goto(page, lesson_url)
+                activities = extract_activity_links_from_lesson_collection(page)
+                print(f"      Activity links found: {len(activities)}")
+                all_activity_links.extend(activities)
+
+        all_activity_links = unique_keep_order(all_activity_links)
+
+        print(f"\nTOTAL lesson activity links: {len(all_activity_links)}")
+        print(f"Saving to: {args.out}")
+
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write("LESSON_URLS = [\n")
+            for link in all_activity_links:
+                f.write(f'    "{link}",\n')
+            f.write("]\n")
+
 
         context.close()
-        browser.close()
 
 
 if __name__ == "__main__":
