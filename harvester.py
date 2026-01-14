@@ -76,7 +76,15 @@ with sync_playwright() as p:
 
     with open(OUTFILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["lesson_url", "lesson_title", "card_step", "section", "card_text"])
+        writer.writerow([
+            "lesson_url",
+            "lesson_title",
+            "card_step",
+            "section",
+            "card_text",
+            "translated_text"
+        ])
+
 
         for idx, lesson_url in enumerate(LESSON_URLS, start=1):
             print(f"\n[{idx}/{len(LESSON_URLS)}] Scraping: {lesson_url}")
@@ -126,6 +134,7 @@ with sync_playwright() as p:
                     clean(step),
                     clean(section),
                     clean(text),
+                    ""  # empty column to be filled later by translator
                 ])
 
     context.close()
