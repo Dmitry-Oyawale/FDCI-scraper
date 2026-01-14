@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import csv
 import re
 import time
+import os
 
 LESSON_URLS = [
     "https://classroom.amplify.com/activity/688d29ffa0fa82bb4881972d?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
@@ -13,6 +14,7 @@ LESSON_URLS = [
 ]
 
 OUTFILE = "amplify_teacher_presentation_cards.csv"
+STORAGE_STATE = "amplify_storage_state.json"
 
 
 def clean(text: str) -> str:
@@ -29,12 +31,11 @@ def safe_inner_text(locator, timeout=1500) -> str:
 
 
 def try_click_preview(page) -> None:
-
     try:
         btn = page.get_by_role("button", name="Preview")
         if btn.count() > 0:
             btn.first.click(timeout=5000)
-            page.wait_for_timeout(800)  
+            page.wait_for_timeout(800)
     except Exception:
         pass
 
@@ -47,15 +48,31 @@ def wait_for_miniscreens(page, timeout=120000) -> None:
     page.wait_for_selector(".alp-preview-miniscreen, .k5-note .ProseMirror", timeout=timeout, state="attached")
 
 
+def has_miniscreens_quick(page, timeout=10000) -> bool:
+    try:
+        page.wait_for_selector(".alp-preview-miniscreen, .k5-note .ProseMirror", timeout=timeout, state="attached")
+        return True
+    except PlaywrightTimeoutError:
+        return False
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=False)
-    context = browser.new_context()
+
+    if os.path.exists(STORAGE_STATE):
+        context = browser.new_context(storage_state=STORAGE_STATE)
+    else:
+        context = browser.new_context()
+
     page = context.new_page()
 
-    print("\nA browser window opened.")
-    print("1) In THAT window, log into Amplify (SSO/etc).")
-    print("2) Once you can open a lesson normally in that same window, come back here.")
-    input("Then press ENTER here to start scraping...")
+    if not os.path.exists(STORAGE_STATE):
+        print("\nA browser window opened.")
+        print("1) In THAT window, log into Amplify (SSO/etc).")
+        print("2) Once you can open a lesson normally in that same window, come back here.")
+        input("Then press ENTER here to save login + start scraping...")
+        context.storage_state(path=STORAGE_STATE)
+        print(f"Saved login state to: {STORAGE_STATE}")
 
     with open(OUTFILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -66,13 +83,15 @@ with sync_playwright() as p:
 
             try:
                 page.goto(lesson_url, wait_until="domcontentloaded", timeout=120000)
-                page.wait_for_timeout(1500)  
+                page.wait_for_timeout(1500)
 
                 wait_for_lesson_shell(page, timeout=120000)
 
                 try_click_preview(page)
 
-                wait_for_miniscreens(page, timeout=120000)
+                if not has_miniscreens_quick(page, timeout=10000):
+                    print("No teacher presentation miniscreens found (skipping).")
+                    continue
 
             except PlaywrightTimeoutError:
                 ts = int(time.time())
@@ -99,7 +118,6 @@ with sync_playwright() as p:
 
                 step = safe_inner_text(ms.locator(".step-index span"))
                 section = safe_inner_text(ms.locator(".section-name-text span"))
-
                 text = safe_inner_text(ms.locator(".k5-note .ProseMirror"))
 
                 writer.writerow([
@@ -114,3 +132,4 @@ with sync_playwright() as p:
     browser.close()
 
 print(f"\nDone. Wrote {OUTFILE}")
+
