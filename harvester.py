@@ -5,12 +5,7 @@ import time
 import os
 
 LESSON_URLS = [
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb4881972d?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d28b6a0fa82bb487b8567?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819783?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819825?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d29ffa0fa82bb48819892?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e",
-    "https://classroom.amplify.com/activity/688d2a00a0fa82bb488198eb?checkAmplifyLogin=true&collections=68067ea4e80416cdbb08bf03%2C6802a6f4907aef8d98bac94b%2C688d29ffa0fa82bb4881970e"
+
 ]
 
 OUTFILE = "amplify_teacher_presentation_cards.csv"
